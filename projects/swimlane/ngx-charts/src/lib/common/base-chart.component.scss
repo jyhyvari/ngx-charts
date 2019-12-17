@@ -111,4 +111,16 @@
       }
     }
   }
+
+  .selection-area {
+    .selection {
+      fill: rgba(128, 128, 128, 0.4);
+      stroke-width: 1px;
+      stroke: #888888;
+    }
+
+    .handle {
+      fill-opacity: 0;
+    }
+  }
 }

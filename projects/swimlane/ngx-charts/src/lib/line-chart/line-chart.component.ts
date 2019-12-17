@@ -19,6 +19,9 @@ import { BaseChartComponent } from '../common/base-chart.component';
 import { id } from '../utils/id';
 import { getUniqueXDomainValues, getScaleType } from '../common/domain.helper';
 
+import { brushX, brushY, brush } from 'd3-brush';
+import { select, event as d3event } from 'd3-selection';
+
 @Component({
   selector: 'ngx-charts-line-chart',
   template: `
@@ -123,6 +126,8 @@ import { getUniqueXDomainValues, getScaleType } from '../common/domain.helper';
               />
             </svg:g>
           </svg:g>
+
+          <svg:g class="selection-area"></svg:g>
         </svg:g>
       </svg:g>
       <svg:g
@@ -209,12 +214,27 @@ export class LineChartComponent extends BaseChartComponent {
   @Input() xScaleMax: any;
   @Input() yScaleMin: number;
   @Input() yScaleMax: number;
+  @Input() selection: any = { x0: null, x1: null, y0: null, y1: null };
 
   @Output() activate: EventEmitter<any> = new EventEmitter();
   @Output() deactivate: EventEmitter<any> = new EventEmitter();
 
+  @Output() selectionChange: EventEmitter<any> = new EventEmitter();
+  @Output() selectionEnd: EventEmitter<any> = new EventEmitter();
+
   @ContentChild('tooltipTemplate') tooltipTemplate: TemplateRef<any>;
   @ContentChild('seriesTooltipTemplate') seriesTooltipTemplate: TemplateRef<any>;
+
+  @Input() set selectionMode(value: 'x' | 'y' | 'xy') {
+    if (this._selectionMode !== value) {
+      this.removeBrush();
+    }
+    this._selectionMode = value;
+  }
+
+  get selectionMode(): 'x' | 'y' | 'xy' {
+    return this._selectionMode;
+  }
 
   dims: ViewDimensions;
   xSet: any;
@@ -244,6 +264,9 @@ export class LineChartComponent extends BaseChartComponent {
   timelineXDomain: any;
   timelineTransform: any;
   timelinePadding: number = 10;
+  brush: any;
+  updating: boolean = false;
+  _selectionMode: 'x' | 'y' | 'xy' = 'xy';
 
   update(): void {
     super.update();
@@ -262,6 +285,10 @@ export class LineChartComponent extends BaseChartComponent {
       legendType: this.schemeType,
       legendPosition: this.legendPosition
     });
+
+    if (!this.brush && this._selectionMode !== null) {
+      this.addBrush();
+    }
 
     if (this.timeline) {
       this.dims.height -= this.timelineHeight + this.margin[2] + this.timelinePadding;
@@ -287,6 +314,10 @@ export class LineChartComponent extends BaseChartComponent {
 
     this.clipPathId = 'clip' + id().toString();
     this.clipPath = `url(#${this.clipPathId})`;
+
+    if (this.brush) {
+      this.updateBrush();
+    }
   }
 
   updateTimeline(): void {
@@ -409,10 +440,149 @@ export class LineChartComponent extends BaseChartComponent {
     return this.roundDomains ? scale.nice() : scale;
   }
 
+  removeBrush(): void {
+    if (!this.brush) return;
+
+    const g = select(this.chartElement.nativeElement)
+      .select('.selection-area')
+      .call(this.brush);
+
+    this.brush.clear(g);
+
+    this.setSelection(null, null, null, null);
+    this.brush = null;
+
+    this.cd.markForCheck();
+  }
+
+  setSelection(x0, x1, y0, y1): void {
+    this.selection.x0 = x0;
+    this.selection.x1 = x1;
+    this.selection.y0 = y0;
+    this.selection.y1 = y1;
+
+    this.selectionChange.emit(this.selection);
+  }
+
+  addBrush(): void {
+    if (this.brush || !this.selection) return;
+
+    switch (this._selectionMode) {
+      case 'x':
+        this.brush = brushX();
+        break;
+      case 'y':
+        this.brush = brushY();
+        break;
+      case 'xy':
+        this.brush = brush();
+        break;
+    }
+
+    this.brush
+      .extent([
+        [0, 0],
+        [this.dims.width, this.dims.height]
+      ])
+      .on('brush end', () => {
+        if (!this.updating) {
+          const selection = d3event.selection;
+          if (selection) {
+            switch (this._selectionMode) {
+              case 'x':
+                this.setSelection(this.xScale.invert(selection[0]), this.xScale.invert(selection[1]), null, null);
+                break;
+              case 'y':
+                this.setSelection(null, null, this.yScale.invert(selection[0]), this.yScale.invert(selection[1]));
+                break;
+              case 'xy':
+                this.setSelection(
+                  this.xScale.invert(selection[0][0]),
+                  this.xScale.invert(selection[1][0]),
+                  this.yScale.invert(selection[0][1]),
+                  this.yScale.invert(selection[1][1])
+                );
+                break;
+            }
+          } else {
+            this.setSelection(null, null, null, null);
+          }
+          if (d3event.type === 'end') {
+            this.selectionEnd.emit(this.selection);
+          }
+          this.cd.markForCheck();
+        }
+      });
+
+    select(this.chartElement.nativeElement)
+      .select('.selection-area')
+      .call(this.brush);
+  }
+
+  updateBrush(): void {
+    if (!this.brush) return;
+
+    this.updating = true;
+
+    this.brush.extent([
+      [0, 0],
+      [this.dims.width, this.dims.height]
+    ]);
+
+    const g = select(this.chartElement.nativeElement)
+      .select('.selection-area')
+      .call(this.brush);
+
+    if (this.selection) {
+      switch (this._selectionMode) {
+        case 'x':
+          if (this.selection.x0 !== null && this.selection.x1 !== null) {
+            this.brush.move(g, [this.xScale(this.selection.x0), this.xScale(this.selection.x1)]);
+          }
+          break;
+
+        case 'y':
+          if (this.selection.y0 !== null && this.selection.y1 !== null) {
+            this.brush.move(g, [this.yScale(this.selection.y0), this.yScale(this.selection.y1)]);
+          }
+          break;
+
+        case 'xy':
+          if (
+            this.selection.x0 !== null &&
+            this.selection.x1 !== null &&
+            this.selection.y0 !== null &&
+            this.selection.y1 !== null
+          ) {
+            this.brush.move(g, [
+              [this.xScale(this.selection.x0), this.yScale(this.selection.y0)],
+              [this.xScale(this.selection.x1), this.yScale(this.selection.y1)]
+            ]);
+          }
+          break;
+      }
+    }
+
+    // clear hardcoded properties so they can be defined by CSS
+    select(this.chartElement.nativeElement)
+      .select('.selection')
+      .attr('fill', undefined)
+      .attr('stroke', undefined)
+      .attr('fill-opacity', undefined);
+
+    this.updating = false;
+
+    this.cd.markForCheck();
+  }
+
   updateDomain(domain): void {
     this.filteredDomain = domain;
     this.xDomain = this.filteredDomain;
     this.xScale = this.getXScale(this.xDomain, this.dims.width);
+
+    if (this.brush) {
+      this.updateBrush();
+    }
   }
 
   updateHoveredVertical(item): void {
